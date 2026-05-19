@@ -2,23 +2,38 @@ package main
 
 import (
 	"fmt"
-	"sync"
+	"net/http"
 
+	"concurrent-task-queue-server/internal/api"
 	"concurrent-task-queue-server/internal/queue"
 	"concurrent-task-queue-server/internal/task"
 	"concurrent-task-queue-server/internal/worker"
 )
 
-var wg sync.WaitGroup
-
 func main() {
 	fmt.Println("Server starting...")
 
 	taskQueue := queue.NewTaskQueue(10)
+	taskStore := task.NewStore()
 
-	worker.StartWorker(1, taskQueue.Tasks, &wg)
-	worker.StartWorker(2, taskQueue.Tasks, &wg)
-	worker.StartWorker(3, taskQueue.Tasks, &wg)
+	worker.StartWorker(1, taskQueue.Tasks, taskStore)
+	worker.StartWorker(2, taskQueue.Tasks, taskStore)
+	worker.StartWorker(3, taskQueue.Tasks, taskStore)
+
+	taskHandler := &api.TaskHandler{
+		TaskQueue: taskQueue.Tasks,
+		Store:     taskStore,
+	}
+
+	http.HandleFunc("/tasks", taskHandler.CreateTask)
+	http.HandleFunc("/tasks/", taskHandler.GetTask)
+
+	fmt.Println("Listening on http://localhost:8080...")
+
+	err := http.ListenAndServe(":8080", nil)
+	if err != nil {
+		fmt.Println("Server error:", err)
+	}
 
 	tasks := []task.Task{
 		{
@@ -60,13 +75,11 @@ func main() {
 	}
 
 	for _, t := range tasks {
-		wg.Add(1)
 		taskQueue.Tasks <- t
 		fmt.Println("Task added to queue:")
 		fmt.Println(t)
 	}
 
-	wg.Wait()
 	close(taskQueue.Tasks)
 	fmt.Println("Server shutting down...")
 

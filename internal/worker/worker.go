@@ -2,17 +2,16 @@ package worker
 
 import (
 	"fmt"
-	"sync"
 	"time"
 
 	"concurrent-task-queue-server/internal/task"
 )
 
-func StartWorker(id int, tasks chan task.Task, wg *sync.WaitGroup) {
+func StartWorker(id int, tasks chan task.Task, store *task.Store) {
 	go func() {
 		for t := range tasks {
-
 			t.Status = "processing"
+			store.Save(t)
 
 			fmt.Printf("Worker %d started task %d: %s\n", id, t.ID, t.Payload)
 
@@ -22,14 +21,15 @@ func StartWorker(id int, tasks chan task.Task, wg *sync.WaitGroup) {
 
 			if success {
 				t.Status = "completed"
-
+				t.Error = ""
+				store.Save(t)
 				fmt.Printf("Worker %d completed task %d\n", id, t.ID)
-				wg.Done()
 
 			} else {
 				t.Attempts++
 				t.Status = "failed"
 				t.Error = "simulated processing failure"
+				store.Save(t)
 
 				fmt.Printf(
 					"Worker %d failed task %d (Attempt %d)\n",
@@ -45,7 +45,7 @@ func StartWorker(id int, tasks chan task.Task, wg *sync.WaitGroup) {
 					)
 
 					t.Status = "retrying"
-
+					store.Save(t)
 					tasks <- t
 
 				} else {
@@ -53,7 +53,6 @@ func StartWorker(id int, tasks chan task.Task, wg *sync.WaitGroup) {
 						"Task %d permanently failed.\n",
 						t.ID,
 					)
-					wg.Done()
 				}
 			}
 		}
