@@ -1,2 +1,5 @@
 *.exe
 *.log
+.venv/
+*.py[cod]
+__pycache__/

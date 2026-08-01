@@ -1,86 +1,158 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"concurrent-task-queue-server/internal/api"
+	"concurrent-task-queue-server/internal/member"
 	"concurrent-task-queue-server/internal/queue"
 	"concurrent-task-queue-server/internal/task"
 	"concurrent-task-queue-server/internal/worker"
 )
 
 func main() {
-	fmt.Println("Server starting...")
+	fmt.Println("Chimera Task Server starting...")
 
 	taskQueue := queue.NewTaskQueue(10)
 	taskStore := task.NewStore()
+	memberStore := member.NewStore()
 
-	worker.StartWorker(1, taskQueue.Tasks, taskStore)
-	worker.StartWorker(2, taskQueue.Tasks, taskStore)
-	worker.StartWorker(3, taskQueue.Tasks, taskStore)
+	startWorkers(
+		3,
+		taskQueue.Tasks,
+		taskStore,
+	)
 
 	taskHandler := &api.TaskHandler{
-		TaskQueue: taskQueue.Tasks,
-		Store:     taskStore,
+		TaskQueue:   taskQueue.Tasks,
+		TaskStore:   taskStore,
+		MemberStore: memberStore,
 	}
 
-	http.HandleFunc("/tasks", taskHandler.CreateTask)
-	http.HandleFunc("/tasks/", taskHandler.GetTask)
+	memberHandler := &api.MemberHandler{
+		Store: memberStore,
+	}
 
-	fmt.Println("Listening on http://localhost:8080...")
+	mux := http.NewServeMux()
 
-	err := http.ListenAndServe(":8080", nil)
+	mux.HandleFunc(
+		"/tasks",
+		taskHandler.HandleTasks,
+	)
+
+	mux.HandleFunc(
+		"/tasks/",
+		taskHandler.GetTask,
+	)
+
+	mux.HandleFunc(
+		"/members",
+		memberHandler.HandleMembers,
+	)
+
+	mux.HandleFunc(
+		"/members/",
+		memberHandler.GetMember,
+	)
+
+	server := &http.Server{
+		Addr:    ":8080",
+		Handler: mux,
+	}
+
+	serverErrors := make(chan error, 1)
+
+	go func() {
+		fmt.Println(
+			"Listening on http://localhost:8080",
+		)
+
+		serverErrors <- server.ListenAndServe()
+	}()
+
+	shutdownSignal := make(
+		chan os.Signal,
+		1,
+	)
+
+	signal.Notify(
+		shutdownSignal,
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+
+	select {
+	case signal := <-shutdownSignal:
+		fmt.Printf(
+			"\nShutdown signal received: %s\n",
+			signal,
+		)
+
+	case err := <-serverErrors:
+		if !errors.Is(
+			err,
+			http.ErrServerClosed,
+		) {
+			log.Fatalf(
+				"Server error: %v\n",
+				err,
+			)
+		}
+	}
+
+	shutdownServer(server)
+}
+
+func startWorkers(
+	workerCount int,
+	taskQueue chan task.Task,
+	taskStore *task.Store,
+) {
+	for workerID := 1; workerID <= workerCount; workerID++ {
+		worker.StartWorker(
+			workerID,
+			taskQueue,
+			taskStore,
+		)
+	}
+}
+
+func shutdownServer(server *http.Server) {
+	fmt.Println(
+		"Chimera Task Server shutting down...",
+	)
+
+	shutdownContext, cancel := context.WithTimeout(
+		context.Background(),
+		5*time.Second,
+	)
+	defer cancel()
+
+	err := server.Shutdown(shutdownContext)
 	if err != nil {
-		fmt.Println("Server error:", err)
+		log.Printf(
+			"Graceful shutdown failed: %v\n",
+			err,
+		)
+
+		err = server.Close()
+		if err != nil {
+			log.Printf(
+				"Forced shutdown failed: %v\n",
+				err,
+			)
+		}
 	}
 
-	tasks := []task.Task{
-		{
-			ID:         1,
-			Type:       "email",
-			Payload:    "Send welcome email",
-			Status:     "queued",
-			MaxRetries: 3,
-		},
-		{
-			ID:         2,
-			Type:       "sms",
-			Payload:    "Send login code",
-			Status:     "queued",
-			MaxRetries: 3,
-		},
-		{
-			ID:         3,
-			Type:       "report",
-			Payload:    "Generate daily report",
-			Status:     "queued",
-			MaxRetries: 3,
-		},
-		{
-			ID:         4,
-			Type:       "backup",
-			Payload:    "Run database backup",
-			Status:     "queued",
-			MaxRetries: 3,
-		},
-
-		{
-			ID:         5,
-			Type:       "email",
-			Payload:    "Send password reset email",
-			Status:     "queued",
-			MaxRetries: 3,
-		},
-	}
-
-	for _, t := range tasks {
-		taskQueue.Tasks <- t
-		fmt.Println("Task added to queue:")
-		fmt.Println(t)
-	}
-
-	close(taskQueue.Tasks)
-	fmt.Println("Server shutting down...")
-
+	fmt.Println(
+		"Chimera Task Server stopped safely.",
+	)
 }
